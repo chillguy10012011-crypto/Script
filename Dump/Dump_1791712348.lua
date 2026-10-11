@@ -1,0 +1,1706 @@
+
+
+-- [HTTPGET #1]: https://scriptblox.com/raw/UP-Just-a-baseplate.-FE-sword-glitcher-229839
+--========================================================--
+-- STACK HUB - STAR GLITCHER V18
+-- ULTIMATE EDITION (BRAÇOS E ESPADAS PARA O CÉU + RANDOM CHAT)
+--========================================================--
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TextChatService = game:GetService("TextChatService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Debris = game:GetService("Debris")
+
+local player = Players.LocalPlayer
+
+--========================================================--
+-- SWORD GRIP (APONTANDO PARA CIMA)
+--========================================================--
+
+local GripData = {
+	pX = 0,
+	pY = 0,
+	pZ = 0,
+	rX = 0,
+	rY = 0,
+	rZ = 0
+}
+
+--========================================================--
+-- STATES
+--========================================================--
+
+local running = false
+local isAttacking = false
+local attackCooldownActive = false
+local isBeyblading = false
+
+local attackStart = 0
+local ATTACK_DURATION = 0.35
+
+local character = player.Character or player.CharacterAdded:Wait()
+
+local humanoid
+local rootPart
+local rootJoint
+local originalRootC0
+
+local rightArm
+local leftArm
+local rightLeg
+local leftLeg
+
+local fakeLimbs = {}
+local limbTrails = {}
+local trailAttachments = {}
+
+local activeSwords = {}
+local spinningHats = {}
+local heldSword = nil
+local heldSwords = {}
+
+local hubGui
+local mainPanel
+local draw1Btn
+local draw2Btn
+local randomChatBtn
+
+local attackGui
+local attackScreenBtn
+local beybladeGuiBtn
+
+local wasRunningBeforeRespawn = false
+local RENDER_NAME = "STACK_STAR_GLITCHER_RENDER_V18"
+
+--========================================================--
+-- LOCAL INTERPOLATION
+--========================================================--
+
+local currTorso = CFrame.new()
+local currRArm = CFrame.new()
+local currLArm = CFrame.new()
+local currRLeg = CFrame.new()
+local currLLeg = CFrame.new()
+
+local NORMAL_SPEED = 16
+
+--========================================================--
+-- HELPERS
+--========================================================--
+
+local function safeDestroy(obj)
+	if obj then pcall(function() obj:Destroy() end) end
+end
+
+local function cf(x, y, z, rx, ry, rz)
+	return CFrame.new(x, y, z)
+		* CFrame.Angles(
+			math.rad(rx or 0),
+			math.rad(ry or 0),
+			math.rad(rz or 0)
+		)
+end
+
+--========================================================--
+-- ACCESSORY CONVERTER
+--========================================================--
+
+local function createTrail(part)
+	if not part then return end
+
+	local att0 = Instance.new("Attachment", part)
+	att0.Position = Vector3.new(0,1,0)
+
+	local att1 = Instance.new("Attachment", part)
+	att1.Position = Vector3.new(0,-1,0)
+
+	local trail = Instance.new("Trail", part)
+	trail.Attachment0 = att0
+	trail.Attachment1 = att1
+	trail.Lifetime = 0.4
+
+	table.insert(limbTrails, trail)
+	table.insert(trailAttachments, att0)
+	table.insert(trailAttachments, att1)
+end
+
+local function setupAccessory(accessory)
+	if not accessory:IsA("Accessory") then return end
+	
+	local handle = accessory:FindFirstChild("Handle")
+	if not handle then return end
+
+	if handle:FindFirstChild("AlreadyProcessed") then return end
+	local tag = Instance.new("BoolValue", handle)
+	tag.Name = "AlreadyProcessed"
+
+	local isHat = false
+	local att = handle:FindFirstChildOfClass("Attachment")
+
+	if att then
+		local lower = string.lower(att.Name)
+		if string.find(lower, "hat")
+			or string.find(lower, "hair")
+			or string.find(lower, "head")
+			or string.find(lower, "face")
+			or string.find(lower, "neck") then
+			isHat = true
+		end
+	end
+
+	for _, v in ipairs(handle:GetChildren()) do
+		if v:IsA("Attachment") then v:Destroy() end
+	end
+
+	local fake = Instance.new("Part", character)
+	fake.Name = isHat and "HatController" or "SwordController"
+	fake.Size = Vector3.new(1,1,1)
+	fake.Transparency = 1
+	fake.CanCollide = false
+	fake.Massless = true
+	fake.CFrame = rootPart and rootPart.CFrame or character.PrimaryPart.CFrame
+
+	for _, v in ipairs(accessory:GetDescendants()) do
+		if v:IsA("JointInstance")
+			or v:IsA("Motor6D")
+			or v:IsA("Weld")
+			or v:IsA("WeldConstraint") then
+			v:Destroy()
+		end
+	end
+
+	handle.Parent = fake
+	handle.CFrame = fake.CFrame
+
+	local weld = Instance.new("WeldConstraint", fake)
+	weld.Part0 = fake
+	weld.Part1 = handle
+
+	accessory:Destroy()
+	table.insert(fakeLimbs, fake)
+
+	if isHat then
+		table.insert(spinningHats, { part = fake, realAccessory = handle })
+	else
+		table.insert(activeSwords, { part = fake, realAccessory = handle })
+	end
+
+	createTrail(fake)
+end
+
+local accessoryConnection
+local function listenForNewAccessories()
+	if accessoryConnection then accessoryConnection:Disconnect() end
+	accessoryConnection = character.ChildAdded:Connect(function(child)
+		if running and child:IsA("Accessory") then
+			task.wait(0.1)
+			setupAccessory(child)
+		end
+	end)
+end
+
+--========================================================--
+-- R15 & LIMBS SETUP
+--========================================================--
+
+local function bindR15Part(fakeLimb, partName, yOffset)
+	local part = character:FindFirstChild(partName)
+	if not part then return end
+
+	for _, obj in ipairs(part:GetChildren()) do
+		if obj:IsA("Motor6D")
+			or obj:IsA("Weld")
+			or obj:IsA("WeldConstraint") then
+			obj:Destroy()
+		end
+	end
+
+	part.CFrame = fakeLimb.CFrame * CFrame.new(0, yOffset, 0)
+	local weld = Instance.new("WeldConstraint", fakeLimb)
+	weld.Part0 = fakeLimb
+	weld.Part1 = part
+end
+
+local function createFakeLimb(name, p1, p2, p3)
+	local fake = Instance.new("Part", character)
+	fake.Name = name
+	fake.Size = Vector3.new(1,2,1)
+	fake.Transparency = 1
+	fake.CanCollide = false
+	fake.Massless = true
+	fake.CFrame = rootPart.CFrame
+
+	table.insert(fakeLimbs, fake)
+
+	if humanoid.RigType == Enum.HumanoidRigType.R15 then
+		bindR15Part(fake, p1, 0.4)
+		bindR15Part(fake, p2, -0.2)
+		bindR15Part(fake, p3, -0.85)
+	else
+		bindR15Part(fake, p1, 0)
+	end
+
+	return fake
+end
+
+--========================================================--
+-- ANIMATION SYSTEM (BRAÇOS E ESPADAS PARA O CÉU)
+--========================================================--
+
+local function getAnimation(time, moving)
+	local torsoTilt = CFrame.new()
+	local rArm = cf(1.45, 0.1, 0)
+	local lArm = cf(-1.45, 0.1, 0)
+	local rLeg = cf(0.5, -1.9, 0)
+	local lLeg = cf(-0.5, -1.9, 0)
+
+	local breathe = math.sin(time * 2.1)
+	local sway = math.sin(time * 1.35)
+	local sway2 = math.cos(time * 1.35)
+
+	if not moving then
+		torsoTilt = CFrame.Angles(
+			math.rad(breathe * 0.8),
+			math.rad(sway * 1),
+			math.rad(sway2 * 0.8)
+		)
+
+		if heldSword then
+			rArm = cf(1.3, 0.5, 0, -90, 0, 0)
+			lArm = cf(-1.3, -0.05, 0, 10, 0, -18)
+		elseif #heldSwords > 0 then
+			rArm = cf(1.3, 0.5, 0, -90, 0, 0)
+			lArm = cf(-1.3, 0.5, 0, -90, 0, 0)
+		else
+			rArm = cf(1.3, -0.05, 0, 5 + breathe * 2, 0, 12)
+			lArm = cf(-1.3, -0.05, 0, 5 - breathe * 2, 0, -12)
+		end
+	else
+		local walkCycle = math.sin(time * 10)
+		torsoTilt = CFrame.Angles(math.rad(-10), 0, math.rad(sway * 2))
+
+		if heldSword then
+			rArm = cf(1.4, 0.5, 0, -90, 0, 0)
+			lArm = cf(-1.4, 0.1, 0, walkCycle * 40, 0, -10)
+		elseif #heldSwords > 0 then
+			rArm = cf(1.4, 0.5, 0, -90, 0, 0)
+			lArm = cf(-1.4, 0.5, 0, -90, 0, 0)
+		else
+			rArm = cf(1.4, 0.1, 0, -walkCycle * 40, 0, 10)
+			lArm = cf(-1.4, 0.1, 0, walkCycle * 40, 0, -10)
+		end
+
+		local rLegY = walkCycle > 0 and walkCycle * 0.3 or 0
+		local lLegY = walkCycle < 0 and -walkCycle * 0.3 or 0
+
+		rLeg = cf(0.5, -1.9 + rLegY, -walkCycle * 0.5, walkCycle * 45, 0, 0)
+		lLeg = cf(-0.5, -1.9 + lLegY, walkCycle * 0.5, -walkCycle * 45, 0, 0)
+	end
+
+	return torsoTilt, rArm, lArm, rLeg, lLeg
+end
+
+--========================================================--
+-- CHAT SYSTEM & RANDOM CHAT LINES
+--========================================================--
+
+local function sendChatMessage(msg)
+	if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+		local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+		if channel then channel:SendAsync(msg) end
+	else
+		local events = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+		if events then
+			local remote = events:FindFirstChild("SayMessageRequest")
+			if remote then remote:FireServer(msg, "All") end
+		end
+	end
+end
+
+local randomPhrases = {
+	"LITTLE_PANCAKE LORD REMAKE",
+	"STAR GLITCHER V18 ACTIVE!",
+	"YOU CANNOT DEFEAT THE STACK.",
+	"ABSOLUTE POWER UNLEASHED.",
+	"GLITCH PROTOCOL ENGAGED."
+}
+
+local function sendRandomChat()
+	local phrase = randomPhrases[math.random(1, #randomPhrases)]
+	sendChatMessage(phrase)
+end
+
+--========================================================--
+-- BEYBLADE LAUNCHER SYSTEM
+--========================================================--
+
+local function triggerBeybladeLaunch()
+	if isBeyblading or #heldSwords < 2 then return end
+	isBeyblading = true
+
+	task.spawn(function()
+		local startPos = rootPart.Position
+		local lookDir = rootPart.CFrame.LookVector
+		local maxDist = 35
+		local duration = 1.2
+		local startTime = os.clock()
+
+		while os.clock() - startTime < duration do
+			local alpha = (os.clock() - startTime) / duration
+			local currentDist = math.sin(alpha * math.pi) * maxDist
+			local spinSpeed = os.clock() * 35
+
+			for i, sw in ipairs(heldSwords) do
+				if sw and sw.part and sw.part.Parent then
+					local sideOffset = (i == 1) and 2 or -2
+					local targetPos = startPos + (lookDir * currentDist) + Vector3.new(sideOffset, 2, 0)
+					sw.part.CFrame = CFrame.new(targetPos) * CFrame.Angles(0, spinSpeed * (i == 1 and 1 or -1), math.rad(90))
+				end
+			end
+			task.wait(0.016)
+		end
+
+		isBeyblading = false
+	end)
+end
+
+--========================================================--
+-- DRAGGABLE GUI
+--========================================================--
+
+local function makeDraggable(gui)
+	local dragToggle = false
+	local dragStart, startPos
+
+	gui.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragToggle = true
+			dragStart = input.Position
+			startPos = gui.Position
+
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					dragToggle = false
+				end
+			end)
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if dragToggle and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local delta = input.Position - dragStart
+			gui.Position = UDim2.new(
+				startPos.X.Scale,
+				startPos.X.Offset + delta.X,
+				startPos.Y.Scale,
+				startPos.Y.Offset + delta.Y
+			)
+		end
+	end)
+end
+
+--========================================================--
+-- SCREEN ATTACK & BEYBLADE BUTTONS
+--========================================================--
+
+local function createAttackScreenButton()
+	safeDestroy(attackGui)
+	
+	attackGui = Instance.new("ScreenGui", player:WaitForChild("PlayerGui"))
+	attackGui.Name = "StarGlitcherAttackBtn"
+	attackGui.ResetOnSpawn = false
+
+	attackScreenBtn = Instance.new("TextButton", attackGui)
+	attackScreenBtn.Size = UDim2.new(0, 60, 0, 60)
+	attackScreenBtn.Position = UDim2.new(0.85, 0, 0.65, 0)
+	attackScreenBtn.BackgroundColor3 = Color3.fromRGB(220, 40, 40)
+	attackScreenBtn.Text = "ATK"
+	attackScreenBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	attackScreenBtn.TextScaled = true
+	attackScreenBtn.Font = Enum.Font.GothamBlack
+	Instance.new("UICorner", attackScreenBtn).CornerRadius = UDim.new(1, 0)
+	Instance.new("UIStroke", attackScreenBtn).Thickness = 3
+	makeDraggable(attackScreenBtn)
+
+	attackScreenBtn.Activated:Connect(function()
+		if not running or isAttacking or attackCooldownActive then return end
+
+		isAttacking = true
+		attackCooldownActive = true
+		attackStart = os.clock()
+
+		local sfx = Instance.new("Sound", rootPart)
+		sfx.SoundId = "rbxassetid://120822746678209"
+		sfx.Volume = 2
+		sfx:Play()
+		Debris:AddItem(sfx, 3)
+
+		task.delay(ATTACK_DURATION, function()
+			isAttacking = false
+		end)
+
+		task.spawn(function()
+			attackScreenBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+			for i = 5, 1, -1 do
+				if not attackScreenBtn or not attackScreenBtn.Parent then break end
+				attackScreenBtn.Text = tostring(i)
+				task.wait(1)
+			end
+			if attackScreenBtn and attackScreenBtn.Parent then
+				attackScreenBtn.Text = "ATK"
+				attackScreenBtn.BackgroundColor3 = Color3.fromRGB(220, 40, 40)
+			end
+			attackCooldownActive = false
+		end)
+	end)
+
+	beybladeGuiBtn = Instance.new("TextButton", attackGui)
+	beybladeGuiBtn.Size = UDim2.new(0, 60, 0, 60)
+	beybladeGuiBtn.Position = UDim2.new(0.73, 0, 0.65, 0)
+	beybladeGuiBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 255)
+	beybladeGuiBtn.Text = "BEY"
+	beybladeGuiBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	beybladeGuiBtn.TextScaled = true
+	beybladeGuiBtn.Font = Enum.Font.GothamBlack
+	Instance.new("UICorner", beybladeGuiBtn).CornerRadius = UDim.new(1, 0)
+	Instance.new("UIStroke", beybladeGuiBtn).Thickness = 3
+	makeDraggable(beybladeGuiBtn)
+
+	beybladeGuiBtn.Activated:Connect(function()
+		if not running or #heldSwords < 2 then return end
+		triggerBeybladeLaunch()
+	end)
+end
+
+--========================================================--
+-- START ANIMATION
+--========================================================--
+
+local function startAnimation()
+	if running then return end
+	if not character then character = player.Character end
+
+	humanoid = character:FindFirstChildOfClass("Humanoid")
+	rootPart = character:FindFirstChild("HumanoidRootPart")
+	if not humanoid or not rootPart then return end
+
+	pcall(function() RunService:UnbindFromRenderStep(RENDER_NAME) end)
+
+	for _, trail in ipairs(limbTrails) do safeDestroy(trail) end
+	limbTrails = {}
+
+	local isR15 = humanoid.RigType == Enum.HumanoidRigType.R15
+
+	if isR15 then
+		rootJoint = character:FindFirstChild("LowerTorso") and character.LowerTorso:FindFirstChild("Root") or rootPart:FindFirstChild("RootJoint")
+		rightArm = createFakeLimb("RightArm", "RightUpperArm", "RightLowerArm", "RightHand")
+		leftArm = createFakeLimb("LeftArm", "LeftUpperArm", "LeftLowerArm", "LeftHand")
+		rightLeg = createFakeLimb("RightLeg", "RightUpperLeg", "RightLowerLeg", "RightFoot")
+		leftLeg = createFakeLimb("LeftLeg", "LeftUpperLeg", "LeftLowerLeg", "LeftFoot")
+	else
+		rootJoint = rootPart:FindFirstChild("RootJoint")
+		rightArm = createFakeLimb("RightArm", "Right Arm")
+		leftArm = createFakeLimb("LeftArm", "Left Arm")
+		rightLeg = createFakeLimb("RightLeg", "Right Leg")
+		leftLeg = createFakeLimb("LeftLeg", "Left Leg")
+		local torsoPart = character:FindFirstChild("Torso")
+		if torsoPart then
+			for _, name in ipairs({"Right Shoulder", "Left Shoulder", "Right Hip", "Left Hip"}) do
+				local j = torsoPart:FindFirstChild(name)
+				if j then j:Destroy() end
+			end
+		end
+	end
+
+	for _, child in ipairs(character:GetChildren()) do
+		if child:IsA("Accessory") then setupAccessory(child) end
+	end
+	listenForNewAccessories()
+
+	if rootJoint then originalRootC0 = rootJoint.C0 end
+
+	humanoid.WalkSpeed = NORMAL_SPEED
+	humanoid.AutoRotate = true
+
+	currTorso = CFrame.new()
+	currRArm = cf(1.45, 0.1, 0)
+	currLArm = cf(-1.45, 0.1, 0)
+	currRLeg = cf(0.5, -1.9, 0)
+	currLLeg = cf(-0.5, -1.9, 0)
+
+	running = true
+
+	RunService:BindToRenderStep(RENDER_NAME, Enum.RenderPriority.Character.Value + 1, function(dt)
+		if not running or not humanoid or humanoid.Health <= 0 or not rootPart then return end
+
+		local now = os.clock()
+		local moving = humanoid.MoveDirection.Magnitude > 0.05
+
+		local torsoTilt, targetRight, targetLeft, targetRLeg, targetLLeg = getAnimation(now, moving)
+
+		local shakeOffset = CFrame.new()
+		if not moving then
+			local twitchCycle = now % 2
+			if twitchCycle < 0.15 then
+				shakeOffset = CFrame.new(
+					(math.random() - 0.5) * 0.3,
+					(math.random() - 0.5) * 0.3,
+					(math.random() - 0.5) * 0.3
+				) * CFrame.Angles(
+					math.rad((math.random() - 0.5) * 25),
+					math.rad((math.random() - 0.5) * 25),
+					math.rad((math.random() - 0.5) * 25)
+				)
+			end
+		end
+
+		if isAttacking then
+			local atkAlpha = math.clamp((now - attackStart) / ATTACK_DURATION, 0, 1)
+			local atkCurve = math.sin(atkAlpha * math.pi)
+			targetRight = cf(1.30, 0.4 + atkCurve * 0.3, -0.6 - atkCurve * 0.4, 10 - atkCurve * 70, -30, 25)
+			torsoTilt = torsoTilt * CFrame.Angles(0, math.rad(atkCurve * 25), 0)
+		end
+
+		local animSmooth = 0.25
+		currTorso = currTorso:Lerp(torsoTilt, animSmooth)
+		currRArm = currRArm:Lerp(targetRight, animSmooth)
+		currLArm = currLArm:Lerp(targetLeft, animSmooth)
+		currRLeg = currRLeg:Lerp(targetRLeg, animSmooth)
+		currLLeg = currLLeg:Lerp(targetLLeg, animSmooth)
+
+		if rootJoint and originalRootC0 then
+			rootJoint.C0 = originalRootC0 * currTorso * shakeOffset
+		end
+
+		local bodyBase = rootPart.CFrame * currTorso
+
+		if rightArm then
+			rightArm.CFrame = bodyBase * currRArm * shakeOffset
+			rightArm.AssemblyLinearVelocity = Vector3.zero
+		end
+		if leftArm then
+			leftArm.CFrame = bodyBase * currLArm * shakeOffset
+			leftArm.AssemblyLinearVelocity = Vector3.zero
+		end
+		if rightLeg then
+			rightLeg.CFrame = bodyBase * currRLeg * shakeOffset
+			rightLeg.AssemblyLinearVelocity = Vector3.zero
+		end
+		if leftLeg then
+			leftLeg.CFrame = bodyBase * currLLeg * shakeOffset
+			leftLeg.AssemblyLinearVelocity = Vector3.zero
+		end
+
+		if heldSword and rightArm then
+			local customGrip = CFrame.new(GripData.pX, GripData.pY, GripData.pZ) * CFrame.Angles(math.rad(GripData.rX), math.rad(GripData.rY), math.rad(GripData.rZ))
+			heldSword.part.CFrame = rightArm.CFrame * customGrip
+			heldSword.part.AssemblyLinearVelocity = Vector3.zero
+		end
+
+		if #heldSwords == 2 and not isBeyblading then
+			if rightArm and leftArm then
+				local customGrip = CFrame.new(GripData.pX, GripData.pY, GripData.pZ) * CFrame.Angles(math.rad(GripData.rX), math.rad(GripData.rY), math.rad(GripData.rZ))
+				heldSwords[1].part.CFrame = rightArm.CFrame * customGrip
+				heldSwords[2].part.CFrame = leftArm.CFrame * customGrip
+				heldSwords[1].part.AssemblyLinearVelocity = Vector3.zero
+				heldSwords[2].part.AssemblyLinearVelocity = Vector3.zero
+			end
+		end
+
+		for index, sword in ipairs(activeSwords) do
+			if not sword.part or not sword.part.Parent then continue end
+			local swingX = math.sin(now * 3 + index) * 20
+			local swingZ = math.cos(now * 2.5 + index) * 15
+
+			local offsetSide = CFrame.new(
+				-1.2 - ((index - 1) * 0.15),
+				-1,
+				(index - 1) * 0.1
+			) * CFrame.Angles(
+				math.rad(swingX),
+				math.rad(90),
+				math.rad(-45 + swingZ)
+			)
+
+			sword.part.CFrame = bodyBase * offsetSide
+			sword.part.AssemblyLinearVelocity = Vector3.zero
+		end
+
+		local hatCount = #spinningHats
+		for index, hat in ipairs(spinningHats) do
+			if not hat.part or not hat.part.Parent then continue end
+			local spinSpeed = now * 4
+			local angleOffset = (index / hatCount) * math.pi * 2
+			local radius = hatCount > 1 and 1.5 or 0 
+
+			local backBase = bodyBase * CFrame.new(0, 0.5, 1.3)
+			local orbit = CFrame.Angles(0, 0, spinSpeed + angleOffset) * CFrame.new(0, radius, 0)
+			local selfSpin = CFrame.Angles(math.rad(90), 0, spinSpeed * 2)
+
+			hat.part.CFrame = backBase * orbit * selfSpin
+			hat.part.AssemblyLinearVelocity = Vector3.zero
+		end
+	end)
+end
+
+--========================================================--
+-- STOP ANIMATION
+--========================================================--
+
+local function stopAnimation()
+	wasRunningBeforeRespawn = running
+	running = false
+	isAttacking = false
+	attackCooldownActive = false
+	isBeyblading = false
+
+	if accessoryConnection then accessoryConnection:Disconnect() end
+	pcall(function() RunService:UnbindFromRenderStep(RENDER_NAME) end)
+
+	if rootJoint and originalRootC0 then rootJoint.C0 = originalRootC0 end
+
+	for _, obj in ipairs(fakeLimbs) do safeDestroy(obj) end
+	fakeLimbs = {}
+
+	activeSwords = {}
+	heldSword = nil
+	heldSwords = {}
+	spinningHats = {}
+
+	if draw1Btn then draw1Btn.Text = "DRAW 1 SWORD" end
+	if draw2Btn then draw2Btn.Text = "DRAW 2 SWORDS (DUAL)" end
+
+	if humanoid then
+		humanoid.AutoRotate = true
+		humanoid.WalkSpeed = NORMAL_SPEED
+	end
+end
+
+--========================================================--
+-- HUB
+--========================================================--
+
+local function createHub()
+	safeDestroy(hubGui)
+
+	hubGui = Instance.new("ScreenGui", player:WaitForChild("PlayerGui"))
+	hubGui.Name = "StackHubGlitcher"
+	hubGui.ResetOnSpawn = false
+
+	local openBtn = Instance.new("TextButton", hubGui)
+	openBtn.Size = UDim2.new(0, 44, 0, 44)
+	openBtn.Position = UDim2.new(0, 18, 0, 18)
+	openBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+	openBtn.Text = "S"
+	openBtn.TextColor3 = Color3.fromRGB(0, 200, 255)
+	openBtn.TextScaled = true
+	openBtn.Font = Enum.Font.GothamBlack
+	Instance.new("UICorner", openBtn).CornerRadius = UDim.new(0, 12)
+	Instance.new("UIStroke", openBtn).Thickness = 2
+	makeDraggable(openBtn)
+
+	mainPanel = Instance.new("Frame", hubGui)
+	mainPanel.Size = UDim2.new(0, 340, 0, 325)
+	mainPanel.Position = UDim2.new(0.5, -170, 0.5, -160)
+	mainPanel.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+	mainPanel.BackgroundTransparency = 0.08
+	Instance.new("UICorner", mainPanel).CornerRadius = UDim.new(0, 15)
+	Instance.new("UIStroke", mainPanel).Thickness = 2.5
+	makeDraggable(mainPanel)
+
+	local title = Instance.new("TextLabel", mainPanel)
+	title.Size = UDim2.new(1, -20, 0, 32)
+	title.Position = UDim2.new(0, 10, 0, 7)
+	title.BackgroundTransparency = 1
+	title.Text = "STAR GLITCHER + SWORDS"
+	title.TextColor3 = Color3.new(1, 1, 1)
+	title.TextScaled = true
+	title.Font = Enum.Font.GothamBlack
+
+	local startBtn = Instance.new("TextButton", mainPanel)
+	startBtn.Size = UDim2.new(0.5, -13, 0, 32)
+	startBtn.Position = UDim2.new(0, 10, 0, 50)
+	startBtn.BackgroundColor3 = Color3.fromRGB(0, 140, 70)
+	startBtn.Text = "START"
+	startBtn.TextColor3 = Color3.new(1, 1, 1)
+	startBtn.Font = Enum.Font.GothamBold
+	Instance.new("UICorner", startBtn).CornerRadius = UDim.new(0, 7)
+	startBtn.Activated:Connect(startAnimation)
+
+	local stopBtn = Instance.new("TextButton", mainPanel)
+	stopBtn.Size = UDim2.new(0.5, -13, 0, 32)
+	stopBtn.Position = UDim2.new(0.5, 3, 0, 50)
+	stopBtn.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
+	stopBtn.Text = "STOP"
+	stopBtn.TextColor3 = Color3.new(1, 1, 1)
+	stopBtn.Font = Enum.Font.GothamBold
+	Instance.new("UICorner", stopBtn).CornerRadius = UDim.new(0, 7)
+	stopBtn.Activated:Connect(stopAnimation)
+
+	draw1Btn = Instance.new("TextButton", mainPanel)
+	draw1Btn.Size = UDim2.new(1, -20, 0, 36)
+	draw1Btn.Position = UDim2.new(0, 10, 0, 95)
+	draw1Btn.BackgroundColor3 = Color3.fromRGB(0, 170, 80)
+	draw1Btn.Text = "DRAW 1 SWORD"
+	draw1Btn.TextColor3 = Color3.new(1, 1, 1)
+	draw1Btn.Font = Enum.Font.GothamBlack
+	Instance.new("UICorner", draw1Btn).CornerRadius = UDim.new(0, 7)
+
+	draw1Btn.Activated:Connect(function()
+		if not running or (#activeSwords == 0 and not heldSword) then return end
+
+		if heldSword then
+			table.insert(activeSwords, heldSword)
+			heldSword = nil
+			draw1Btn.Text = "DRAW 1 SWORD"
+			draw1Btn.BackgroundColor3 = Color3.fromRGB(0, 170, 80)
+		else
+			heldSwords = {}
+			heldSword = activeSwords[1]
+			table.remove(activeSwords, 1)
+
+			draw1Btn.Text = "PUT AWAY 1 SWORD"
+			draw1Btn.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
+		end
+	end)
+
+	draw2Btn = Instance.new("TextButton", mainPanel)
+	draw2Btn.Size = UDim2.new(1, -20, 0, 36)
+	draw2Btn.Position = UDim2.new(0, 10, 0, 140)
+	draw2Btn.BackgroundColor3 = Color3.fromRGB(0, 120, 200)
+	draw2Btn.Text = "DRAW 2 SWORDS (DUAL)"
+	draw2Btn.TextColor3 = Color3.new(1, 1, 1)
+	draw2Btn.Font = Enum.Font.GothamBlack
+	Instance.new("UICorner", draw2Btn).CornerRadius = UDim.new(0, 7)
+
+	draw2Btn.Activated:Connect(function()
+		if not running then return end
+
+		if #heldSwords > 0 then
+			for _, sw in ipairs(heldSwords) do
+				table.insert(activeSwords, sw)
+			end
+			heldSwords = {}
+			draw2Btn.Text = "DRAW 2 SWORDS (DUAL)"
+			draw2Btn.BackgroundColor3 = Color3.fromRGB(0, 120, 200)
+		else
+			if #activeSwords < 2 then return end
+			heldSword = nil
+
+			heldSwords[1] = activeSwords[1]
+			heldSwords[2] = activeSwords[2]
+			table.remove(activeSwords, 1)
+			table.remove(activeSwords, 1)
+
+			draw2Btn.Text = "PUT AWAY 2 SWORDS"
+			draw2Btn.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
+		end
+	end)
+
+	-- BOTÃO RANDOM CHAT
+	randomChatBtn = Instance.new("TextButton", mainPanel)
+	randomChatBtn.Size = UDim2.new(1, -20, 0, 36)
+	randomChatBtn.Position = UDim2.new(0, 10, 0, 185)
+	randomChatBtn.BackgroundColor3 = Color3.fromRGB(130, 0, 200)
+	randomChatBtn.Text = "RANDOM CHAT"
+	randomChatBtn.TextColor3 = Color3.new(1, 1, 1)
+	randomChatBtn.Font = Enum.Font.GothamBlack
+	Instance.new("UICorner", randomChatBtn).CornerRadius = UDim.new(0, 7)
+
+	randomChatBtn.Activated:Connect(function()
+		if not running then return end
+		sendRandomChat()
+	end)
+
+	local panelOpen = true
+	openBtn.Activated:Connect(function()
+		panelOpen = not panelOpen
+		mainPanel.Visible = panelOpen
+	end)
+end
+
+--========================================================--
+-- RESPAWN & INIT
+--========================================================--
+
+player.CharacterAdded:Connect(function(newCharacter)
+	local restart = wasRunningBeforeRespawn
+	if running then stopAnimation() end
+	character = newCharacter
+	task.wait(1)
+	if restart then startAnimation() end
+end)
+
+createHub()
+createAttackScreenButton()
+
+print("[STACK HUB] V18 carregado com sucesso.")
+
+--========================================================--
+-- AUTO CHAT SEQUENCIAL
+--========================================================--
+
+task.spawn(function()
+	task.wait(1.5)
+	sendChatMessage("-gh 132006952641112 5699795428 5316549755 53165394215716479641")
+	task.wait(1.0)
+	sendChatMessage("-net")
+	task.wait(1.0)
+	sendChatMessage("LITTLE_PANCAKE LORD REMAKE")
+	print("[STACK HUB] Mensagens enviadas no chat com sucesso!")
+end)
+
+
+-- [LOADSTRING #2] - Chunk: nil
+--========================================================--
+-- STACK HUB - STAR GLITCHER V18
+-- ULTIMATE EDITION (BRAÇOS E ESPADAS PARA O CÉU + RANDOM CHAT)
+--========================================================--
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TextChatService = game:GetService("TextChatService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Debris = game:GetService("Debris")
+
+local player = Players.LocalPlayer
+
+--========================================================--
+-- SWORD GRIP (APONTANDO PARA CIMA)
+--========================================================--
+
+local GripData = {
+	pX = 0,
+	pY = 0,
+	pZ = 0,
+	rX = 0,
+	rY = 0,
+	rZ = 0
+}
+
+--========================================================--
+-- STATES
+--========================================================--
+
+local running = false
+local isAttacking = false
+local attackCooldownActive = false
+local isBeyblading = false
+
+local attackStart = 0
+local ATTACK_DURATION = 0.35
+
+local character = player.Character or player.CharacterAdded:Wait()
+
+local humanoid
+local rootPart
+local rootJoint
+local originalRootC0
+
+local rightArm
+local leftArm
+local rightLeg
+local leftLeg
+
+local fakeLimbs = {}
+local limbTrails = {}
+local trailAttachments = {}
+
+local activeSwords = {}
+local spinningHats = {}
+local heldSword = nil
+local heldSwords = {}
+
+local hubGui
+local mainPanel
+local draw1Btn
+local draw2Btn
+local randomChatBtn
+
+local attackGui
+local attackScreenBtn
+local beybladeGuiBtn
+
+local wasRunningBeforeRespawn = false
+local RENDER_NAME = "STACK_STAR_GLITCHER_RENDER_V18"
+
+--========================================================--
+-- LOCAL INTERPOLATION
+--========================================================--
+
+local currTorso = CFrame.new()
+local currRArm = CFrame.new()
+local currLArm = CFrame.new()
+local currRLeg = CFrame.new()
+local currLLeg = CFrame.new()
+
+local NORMAL_SPEED = 16
+
+--========================================================--
+-- HELPERS
+--========================================================--
+
+local function safeDestroy(obj)
+	if obj then pcall(function() obj:Destroy() end) end
+end
+
+local function cf(x, y, z, rx, ry, rz)
+	return CFrame.new(x, y, z)
+		* CFrame.Angles(
+			math.rad(rx or 0),
+			math.rad(ry or 0),
+			math.rad(rz or 0)
+		)
+end
+
+--========================================================--
+-- ACCESSORY CONVERTER
+--========================================================--
+
+local function createTrail(part)
+	if not part then return end
+
+	local att0 = Instance.new("Attachment", part)
+	att0.Position = Vector3.new(0,1,0)
+
+	local att1 = Instance.new("Attachment", part)
+	att1.Position = Vector3.new(0,-1,0)
+
+	local trail = Instance.new("Trail", part)
+	trail.Attachment0 = att0
+	trail.Attachment1 = att1
+	trail.Lifetime = 0.4
+
+	table.insert(limbTrails, trail)
+	table.insert(trailAttachments, att0)
+	table.insert(trailAttachments, att1)
+end
+
+local function setupAccessory(accessory)
+	if not accessory:IsA("Accessory") then return end
+	
+	local handle = accessory:FindFirstChild("Handle")
+	if not handle then return end
+
+	if handle:FindFirstChild("AlreadyProcessed") then return end
+	local tag = Instance.new("BoolValue", handle)
+	tag.Name = "AlreadyProcessed"
+
+	local isHat = false
+	local att = handle:FindFirstChildOfClass("Attachment")
+
+	if att then
+		local lower = string.lower(att.Name)
+		if string.find(lower, "hat")
+			or string.find(lower, "hair")
+			or string.find(lower, "head")
+			or string.find(lower, "face")
+			or string.find(lower, "neck") then
+			isHat = true
+		end
+	end
+
+	for _, v in ipairs(handle:GetChildren()) do
+		if v:IsA("Attachment") then v:Destroy() end
+	end
+
+	local fake = Instance.new("Part", character)
+	fake.Name = isHat and "HatController" or "SwordController"
+	fake.Size = Vector3.new(1,1,1)
+	fake.Transparency = 1
+	fake.CanCollide = false
+	fake.Massless = true
+	fake.CFrame = rootPart and rootPart.CFrame or character.PrimaryPart.CFrame
+
+	for _, v in ipairs(accessory:GetDescendants()) do
+		if v:IsA("JointInstance")
+			or v:IsA("Motor6D")
+			or v:IsA("Weld")
+			or v:IsA("WeldConstraint") then
+			v:Destroy()
+		end
+	end
+
+	handle.Parent = fake
+	handle.CFrame = fake.CFrame
+
+	local weld = Instance.new("WeldConstraint", fake)
+	weld.Part0 = fake
+	weld.Part1 = handle
+
+	accessory:Destroy()
+	table.insert(fakeLimbs, fake)
+
+	if isHat then
+		table.insert(spinningHats, { part = fake, realAccessory = handle })
+	else
+		table.insert(activeSwords, { part = fake, realAccessory = handle })
+	end
+
+	createTrail(fake)
+end
+
+local accessoryConnection
+local function listenForNewAccessories()
+	if accessoryConnection then accessoryConnection:Disconnect() end
+	accessoryConnection = character.ChildAdded:Connect(function(child)
+		if running and child:IsA("Accessory") then
+			task.wait(0.1)
+			setupAccessory(child)
+		end
+	end)
+end
+
+--========================================================--
+-- R15 & LIMBS SETUP
+--========================================================--
+
+local function bindR15Part(fakeLimb, partName, yOffset)
+	local part = character:FindFirstChild(partName)
+	if not part then return end
+
+	for _, obj in ipairs(part:GetChildren()) do
+		if obj:IsA("Motor6D")
+			or obj:IsA("Weld")
+			or obj:IsA("WeldConstraint") then
+			obj:Destroy()
+		end
+	end
+
+	part.CFrame = fakeLimb.CFrame * CFrame.new(0, yOffset, 0)
+	local weld = Instance.new("WeldConstraint", fakeLimb)
+	weld.Part0 = fakeLimb
+	weld.Part1 = part
+end
+
+local function createFakeLimb(name, p1, p2, p3)
+	local fake = Instance.new("Part", character)
+	fake.Name = name
+	fake.Size = Vector3.new(1,2,1)
+	fake.Transparency = 1
+	fake.CanCollide = false
+	fake.Massless = true
+	fake.CFrame = rootPart.CFrame
+
+	table.insert(fakeLimbs, fake)
+
+	if humanoid.RigType == Enum.HumanoidRigType.R15 then
+		bindR15Part(fake, p1, 0.4)
+		bindR15Part(fake, p2, -0.2)
+		bindR15Part(fake, p3, -0.85)
+	else
+		bindR15Part(fake, p1, 0)
+	end
+
+	return fake
+end
+
+--========================================================--
+-- ANIMATION SYSTEM (BRAÇOS E ESPADAS PARA O CÉU)
+--========================================================--
+
+local function getAnimation(time, moving)
+	local torsoTilt = CFrame.new()
+	local rArm = cf(1.45, 0.1, 0)
+	local lArm = cf(-1.45, 0.1, 0)
+	local rLeg = cf(0.5, -1.9, 0)
+	local lLeg = cf(-0.5, -1.9, 0)
+
+	local breathe = math.sin(time * 2.1)
+	local sway = math.sin(time * 1.35)
+	local sway2 = math.cos(time * 1.35)
+
+	if not moving then
+		torsoTilt = CFrame.Angles(
+			math.rad(breathe * 0.8),
+			math.rad(sway * 1),
+			math.rad(sway2 * 0.8)
+		)
+
+		if heldSword then
+			rArm = cf(1.3, 0.5, 0, -90, 0, 0)
+			lArm = cf(-1.3, -0.05, 0, 10, 0, -18)
+		elseif #heldSwords > 0 then
+			rArm = cf(1.3, 0.5, 0, -90, 0, 0)
+			lArm = cf(-1.3, 0.5, 0, -90, 0, 0)
+		else
+			rArm = cf(1.3, -0.05, 0, 5 + breathe * 2, 0, 12)
+			lArm = cf(-1.3, -0.05, 0, 5 - breathe * 2, 0, -12)
+		end
+	else
+		local walkCycle = math.sin(time * 10)
+		torsoTilt = CFrame.Angles(math.rad(-10), 0, math.rad(sway * 2))
+
+		if heldSword then
+			rArm = cf(1.4, 0.5, 0, -90, 0, 0)
+			lArm = cf(-1.4, 0.1, 0, walkCycle * 40, 0, -10)
+		elseif #heldSwords > 0 then
+			rArm = cf(1.4, 0.5, 0, -90, 0, 0)
+			lArm = cf(-1.4, 0.5, 0, -90, 0, 0)
+		else
+			rArm = cf(1.4, 0.1, 0, -walkCycle * 40, 0, 10)
+			lArm = cf(-1.4, 0.1, 0, walkCycle * 40, 0, -10)
+		end
+
+		local rLegY = walkCycle > 0 and walkCycle * 0.3 or 0
+		local lLegY = walkCycle < 0 and -walkCycle * 0.3 or 0
+
+		rLeg = cf(0.5, -1.9 + rLegY, -walkCycle * 0.5, walkCycle * 45, 0, 0)
+		lLeg = cf(-0.5, -1.9 + lLegY, walkCycle * 0.5, -walkCycle * 45, 0, 0)
+	end
+
+	return torsoTilt, rArm, lArm, rLeg, lLeg
+end
+
+--========================================================--
+-- CHAT SYSTEM & RANDOM CHAT LINES
+--========================================================--
+
+local function sendChatMessage(msg)
+	if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+		local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+		if channel then channel:SendAsync(msg) end
+	else
+		local events = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+		if events then
+			local remote = events:FindFirstChild("SayMessageRequest")
+			if remote then remote:FireServer(msg, "All") end
+		end
+	end
+end
+
+local randomPhrases = {
+	"LITTLE_PANCAKE LORD REMAKE",
+	"STAR GLITCHER V18 ACTIVE!",
+	"YOU CANNOT DEFEAT THE STACK.",
+	"ABSOLUTE POWER UNLEASHED.",
+	"GLITCH PROTOCOL ENGAGED."
+}
+
+local function sendRandomChat()
+	local phrase = randomPhrases[math.random(1, #randomPhrases)]
+	sendChatMessage(phrase)
+end
+
+--========================================================--
+-- BEYBLADE LAUNCHER SYSTEM
+--========================================================--
+
+local function triggerBeybladeLaunch()
+	if isBeyblading or #heldSwords < 2 then return end
+	isBeyblading = true
+
+	task.spawn(function()
+		local startPos = rootPart.Position
+		local lookDir = rootPart.CFrame.LookVector
+		local maxDist = 35
+		local duration = 1.2
+		local startTime = os.clock()
+
+		while os.clock() - startTime < duration do
+			local alpha = (os.clock() - startTime) / duration
+			local currentDist = math.sin(alpha * math.pi) * maxDist
+			local spinSpeed = os.clock() * 35
+
+			for i, sw in ipairs(heldSwords) do
+				if sw and sw.part and sw.part.Parent then
+					local sideOffset = (i == 1) and 2 or -2
+					local targetPos = startPos + (lookDir * currentDist) + Vector3.new(sideOffset, 2, 0)
+					sw.part.CFrame = CFrame.new(targetPos) * CFrame.Angles(0, spinSpeed * (i == 1 and 1 or -1), math.rad(90))
+				end
+			end
+			task.wait(0.016)
+		end
+
+		isBeyblading = false
+	end)
+end
+
+--========================================================--
+-- DRAGGABLE GUI
+--========================================================--
+
+local function makeDraggable(gui)
+	local dragToggle = false
+	local dragStart, startPos
+
+	gui.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragToggle = true
+			dragStart = input.Position
+			startPos = gui.Position
+
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					dragToggle = false
+				end
+			end)
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if dragToggle and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local delta = input.Position - dragStart
+			gui.Position = UDim2.new(
+				startPos.X.Scale,
+				startPos.X.Offset + delta.X,
+				startPos.Y.Scale,
+				startPos.Y.Offset + delta.Y
+			)
+		end
+	end)
+end
+
+--========================================================--
+-- SCREEN ATTACK & BEYBLADE BUTTONS
+--========================================================--
+
+local function createAttackScreenButton()
+	safeDestroy(attackGui)
+	
+	attackGui = Instance.new("ScreenGui", player:WaitForChild("PlayerGui"))
+	attackGui.Name = "StarGlitcherAttackBtn"
+	attackGui.ResetOnSpawn = false
+
+	attackScreenBtn = Instance.new("TextButton", attackGui)
+	attackScreenBtn.Size = UDim2.new(0, 60, 0, 60)
+	attackScreenBtn.Position = UDim2.new(0.85, 0, 0.65, 0)
+	attackScreenBtn.BackgroundColor3 = Color3.fromRGB(220, 40, 40)
+	attackScreenBtn.Text = "ATK"
+	attackScreenBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	attackScreenBtn.TextScaled = true
+	attackScreenBtn.Font = Enum.Font.GothamBlack
+	Instance.new("UICorner", attackScreenBtn).CornerRadius = UDim.new(1, 0)
+	Instance.new("UIStroke", attackScreenBtn).Thickness = 3
+	makeDraggable(attackScreenBtn)
+
+	attackScreenBtn.Activated:Connect(function()
+		if not running or isAttacking or attackCooldownActive then return end
+
+		isAttacking = true
+		attackCooldownActive = true
+		attackStart = os.clock()
+
+		local sfx = Instance.new("Sound", rootPart)
+		sfx.SoundId = "rbxassetid://120822746678209"
+		sfx.Volume = 2
+		sfx:Play()
+		Debris:AddItem(sfx, 3)
+
+		task.delay(ATTACK_DURATION, function()
+			isAttacking = false
+		end)
+
+		task.spawn(function()
+			attackScreenBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+			for i = 5, 1, -1 do
+				if not attackScreenBtn or not attackScreenBtn.Parent then break end
+				attackScreenBtn.Text = tostring(i)
+				task.wait(1)
+			end
+			if attackScreenBtn and attackScreenBtn.Parent then
+				attackScreenBtn.Text = "ATK"
+				attackScreenBtn.BackgroundColor3 = Color3.fromRGB(220, 40, 40)
+			end
+			attackCooldownActive = false
+		end)
+	end)
+
+	beybladeGuiBtn = Instance.new("TextButton", attackGui)
+	beybladeGuiBtn.Size = UDim2.new(0, 60, 0, 60)
+	beybladeGuiBtn.Position = UDim2.new(0.73, 0, 0.65, 0)
+	beybladeGuiBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 255)
+	beybladeGuiBtn.Text = "BEY"
+	beybladeGuiBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	beybladeGuiBtn.TextScaled = true
+	beybladeGuiBtn.Font = Enum.Font.GothamBlack
+	Instance.new("UICorner", beybladeGuiBtn).CornerRadius = UDim.new(1, 0)
+	Instance.new("UIStroke", beybladeGuiBtn).Thickness = 3
+	makeDraggable(beybladeGuiBtn)
+
+	beybladeGuiBtn.Activated:Connect(function()
+		if not running or #heldSwords < 2 then return end
+		triggerBeybladeLaunch()
+	end)
+end
+
+--========================================================--
+-- START ANIMATION
+--========================================================--
+
+local function startAnimation()
+	if running then return end
+	if not character then character = player.Character end
+
+	humanoid = character:FindFirstChildOfClass("Humanoid")
+	rootPart = character:FindFirstChild("HumanoidRootPart")
+	if not humanoid or not rootPart then return end
+
+	pcall(function() RunService:UnbindFromRenderStep(RENDER_NAME) end)
+
+	for _, trail in ipairs(limbTrails) do safeDestroy(trail) end
+	limbTrails = {}
+
+	local isR15 = humanoid.RigType == Enum.HumanoidRigType.R15
+
+	if isR15 then
+		rootJoint = character:FindFirstChild("LowerTorso") and character.LowerTorso:FindFirstChild("Root") or rootPart:FindFirstChild("RootJoint")
+		rightArm = createFakeLimb("RightArm", "RightUpperArm", "RightLowerArm", "RightHand")
+		leftArm = createFakeLimb("LeftArm", "LeftUpperArm", "LeftLowerArm", "LeftHand")
+		rightLeg = createFakeLimb("RightLeg", "RightUpperLeg", "RightLowerLeg", "RightFoot")
+		leftLeg = createFakeLimb("LeftLeg", "LeftUpperLeg", "LeftLowerLeg", "LeftFoot")
+	else
+		rootJoint = rootPart:FindFirstChild("RootJoint")
+		rightArm = createFakeLimb("RightArm", "Right Arm")
+		leftArm = createFakeLimb("LeftArm", "Left Arm")
+		rightLeg = createFakeLimb("RightLeg", "Right Leg")
+		leftLeg = createFakeLimb("LeftLeg", "Left Leg")
+		local torsoPart = character:FindFirstChild("Torso")
+		if torsoPart then
+			for _, name in ipairs({"Right Shoulder", "Left Shoulder", "Right Hip", "Left Hip"}) do
+				local j = torsoPart:FindFirstChild(name)
+				if j then j:Destroy() end
+			end
+		end
+	end
+
+	for _, child in ipairs(character:GetChildren()) do
+		if child:IsA("Accessory") then setupAccessory(child) end
+	end
+	listenForNewAccessories()
+
+	if rootJoint then originalRootC0 = rootJoint.C0 end
+
+	humanoid.WalkSpeed = NORMAL_SPEED
+	humanoid.AutoRotate = true
+
+	currTorso = CFrame.new()
+	currRArm = cf(1.45, 0.1, 0)
+	currLArm = cf(-1.45, 0.1, 0)
+	currRLeg = cf(0.5, -1.9, 0)
+	currLLeg = cf(-0.5, -1.9, 0)
+
+	running = true
+
+	RunService:BindToRenderStep(RENDER_NAME, Enum.RenderPriority.Character.Value + 1, function(dt)
+		if not running or not humanoid or humanoid.Health <= 0 or not rootPart then return end
+
+		local now = os.clock()
+		local moving = humanoid.MoveDirection.Magnitude > 0.05
+
+		local torsoTilt, targetRight, targetLeft, targetRLeg, targetLLeg = getAnimation(now, moving)
+
+		local shakeOffset = CFrame.new()
+		if not moving then
+			local twitchCycle = now % 2
+			if twitchCycle < 0.15 then
+				shakeOffset = CFrame.new(
+					(math.random() - 0.5) * 0.3,
+					(math.random() - 0.5) * 0.3,
+					(math.random() - 0.5) * 0.3
+				) * CFrame.Angles(
+					math.rad((math.random() - 0.5) * 25),
+					math.rad((math.random() - 0.5) * 25),
+					math.rad((math.random() - 0.5) * 25)
+				)
+			end
+		end
+
+		if isAttacking then
+			local atkAlpha = math.clamp((now - attackStart) / ATTACK_DURATION, 0, 1)
+			local atkCurve = math.sin(atkAlpha * math.pi)
+			targetRight = cf(1.30, 0.4 + atkCurve * 0.3, -0.6 - atkCurve * 0.4, 10 - atkCurve * 70, -30, 25)
+			torsoTilt = torsoTilt * CFrame.Angles(0, math.rad(atkCurve * 25), 0)
+		end
+
+		local animSmooth = 0.25
+		currTorso = currTorso:Lerp(torsoTilt, animSmooth)
+		currRArm = currRArm:Lerp(targetRight, animSmooth)
+		currLArm = currLArm:Lerp(targetLeft, animSmooth)
+		currRLeg = currRLeg:Lerp(targetRLeg, animSmooth)
+		currLLeg = currLLeg:Lerp(targetLLeg, animSmooth)
+
+		if rootJoint and originalRootC0 then
+			rootJoint.C0 = originalRootC0 * currTorso * shakeOffset
+		end
+
+		local bodyBase = rootPart.CFrame * currTorso
+
+		if rightArm then
+			rightArm.CFrame = bodyBase * currRArm * shakeOffset
+			rightArm.AssemblyLinearVelocity = Vector3.zero
+		end
+		if leftArm then
+			leftArm.CFrame = bodyBase * currLArm * shakeOffset
+			leftArm.AssemblyLinearVelocity = Vector3.zero
+		end
+		if rightLeg then
+			rightLeg.CFrame = bodyBase * currRLeg * shakeOffset
+			rightLeg.AssemblyLinearVelocity = Vector3.zero
+		end
+		if leftLeg then
+			leftLeg.CFrame = bodyBase * currLLeg * shakeOffset
+			leftLeg.AssemblyLinearVelocity = Vector3.zero
+		end
+
+		if heldSword and rightArm then
+			local customGrip = CFrame.new(GripData.pX, GripData.pY, GripData.pZ) * CFrame.Angles(math.rad(GripData.rX), math.rad(GripData.rY), math.rad(GripData.rZ))
+			heldSword.part.CFrame = rightArm.CFrame * customGrip
+			heldSword.part.AssemblyLinearVelocity = Vector3.zero
+		end
+
+		if #heldSwords == 2 and not isBeyblading then
+			if rightArm and leftArm then
+				local customGrip = CFrame.new(GripData.pX, GripData.pY, GripData.pZ) * CFrame.Angles(math.rad(GripData.rX), math.rad(GripData.rY), math.rad(GripData.rZ))
+				heldSwords[1].part.CFrame = rightArm.CFrame * customGrip
+				heldSwords[2].part.CFrame = leftArm.CFrame * customGrip
+				heldSwords[1].part.AssemblyLinearVelocity = Vector3.zero
+				heldSwords[2].part.AssemblyLinearVelocity = Vector3.zero
+			end
+		end
+
+		for index, sword in ipairs(activeSwords) do
+			if not sword.part or not sword.part.Parent then continue end
+			local swingX = math.sin(now * 3 + index) * 20
+			local swingZ = math.cos(now * 2.5 + index) * 15
+
+			local offsetSide = CFrame.new(
+				-1.2 - ((index - 1) * 0.15),
+				-1,
+				(index - 1) * 0.1
+			) * CFrame.Angles(
+				math.rad(swingX),
+				math.rad(90),
+				math.rad(-45 + swingZ)
+			)
+
+			sword.part.CFrame = bodyBase * offsetSide
+			sword.part.AssemblyLinearVelocity = Vector3.zero
+		end
+
+		local hatCount = #spinningHats
+		for index, hat in ipairs(spinningHats) do
+			if not hat.part or not hat.part.Parent then continue end
+			local spinSpeed = now * 4
+			local angleOffset = (index / hatCount) * math.pi * 2
+			local radius = hatCount > 1 and 1.5 or 0 
+
+			local backBase = bodyBase * CFrame.new(0, 0.5, 1.3)
+			local orbit = CFrame.Angles(0, 0, spinSpeed + angleOffset) * CFrame.new(0, radius, 0)
+			local selfSpin = CFrame.Angles(math.rad(90), 0, spinSpeed * 2)
+
+			hat.part.CFrame = backBase * orbit * selfSpin
+			hat.part.AssemblyLinearVelocity = Vector3.zero
+		end
+	end)
+end
+
+--========================================================--
+-- STOP ANIMATION
+--========================================================--
+
+local function stopAnimation()
+	wasRunningBeforeRespawn = running
+	running = false
+	isAttacking = false
+	attackCooldownActive = false
+	isBeyblading = false
+
+	if accessoryConnection then accessoryConnection:Disconnect() end
+	pcall(function() RunService:UnbindFromRenderStep(RENDER_NAME) end)
+
+	if rootJoint and originalRootC0 then rootJoint.C0 = originalRootC0 end
+
+	for _, obj in ipairs(fakeLimbs) do safeDestroy(obj) end
+	fakeLimbs = {}
+
+	activeSwords = {}
+	heldSword = nil
+	heldSwords = {}
+	spinningHats = {}
+
+	if draw1Btn then draw1Btn.Text = "DRAW 1 SWORD" end
+	if draw2Btn then draw2Btn.Text = "DRAW 2 SWORDS (DUAL)" end
+
+	if humanoid then
+		humanoid.AutoRotate = true
+		humanoid.WalkSpeed = NORMAL_SPEED
+	end
+end
+
+--========================================================--
+-- HUB
+--========================================================--
+
+local function createHub()
+	safeDestroy(hubGui)
+
+	hubGui = Instance.new("ScreenGui", player:WaitForChild("PlayerGui"))
+	hubGui.Name = "StackHubGlitcher"
+	hubGui.ResetOnSpawn = false
+
+	local openBtn = Instance.new("TextButton", hubGui)
+	openBtn.Size = UDim2.new(0, 44, 0, 44)
+	openBtn.Position = UDim2.new(0, 18, 0, 18)
+	openBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+	openBtn.Text = "S"
+	openBtn.TextColor3 = Color3.fromRGB(0, 200, 255)
+	openBtn.TextScaled = true
+	openBtn.Font = Enum.Font.GothamBlack
+	Instance.new("UICorner", openBtn).CornerRadius = UDim.new(0, 12)
+	Instance.new("UIStroke", openBtn).Thickness = 2
+	makeDraggable(openBtn)
+
+	mainPanel = Instance.new("Frame", hubGui)
+	mainPanel.Size = UDim2.new(0, 340, 0, 325)
+	mainPanel.Position = UDim2.new(0.5, -170, 0.5, -160)
+	mainPanel.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+	mainPanel.BackgroundTransparency = 0.08
+	Instance.new("UICorner", mainPanel).CornerRadius = UDim.new(0, 15)
+	Instance.new("UIStroke", mainPanel).Thickness = 2.5
+	makeDraggable(mainPanel)
+
+	local title = Instance.new("TextLabel", mainPanel)
+	title.Size = UDim2.new(1, -20, 0, 32)
+	title.Position = UDim2.new(0, 10, 0, 7)
+	title.BackgroundTransparency = 1
+	title.Text = "STAR GLITCHER + SWORDS"
+	title.TextColor3 = Color3.new(1, 1, 1)
+	title.TextScaled = true
+	title.Font = Enum.Font.GothamBlack
+
+	local startBtn = Instance.new("TextButton", mainPanel)
+	startBtn.Size = UDim2.new(0.5, -13, 0, 32)
+	startBtn.Position = UDim2.new(0, 10, 0, 50)
+	startBtn.BackgroundColor3 = Color3.fromRGB(0, 140, 70)
+	startBtn.Text = "START"
+	startBtn.TextColor3 = Color3.new(1, 1, 1)
+	startBtn.Font = Enum.Font.GothamBold
+	Instance.new("UICorner", startBtn).CornerRadius = UDim.new(0, 7)
+	startBtn.Activated:Connect(startAnimation)
+
+	local stopBtn = Instance.new("TextButton", mainPanel)
+	stopBtn.Size = UDim2.new(0.5, -13, 0, 32)
+	stopBtn.Position = UDim2.new(0.5, 3, 0, 50)
+	stopBtn.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
+	stopBtn.Text = "STOP"
+	stopBtn.TextColor3 = Color3.new(1, 1, 1)
+	stopBtn.Font = Enum.Font.GothamBold
+	Instance.new("UICorner", stopBtn).CornerRadius = UDim.new(0, 7)
+	stopBtn.Activated:Connect(stopAnimation)
+
+	draw1Btn = Instance.new("TextButton", mainPanel)
+	draw1Btn.Size = UDim2.new(1, -20, 0, 36)
+	draw1Btn.Position = UDim2.new(0, 10, 0, 95)
+	draw1Btn.BackgroundColor3 = Color3.fromRGB(0, 170, 80)
+	draw1Btn.Text = "DRAW 1 SWORD"
+	draw1Btn.TextColor3 = Color3.new(1, 1, 1)
+	draw1Btn.Font = Enum.Font.GothamBlack
+	Instance.new("UICorner", draw1Btn).CornerRadius = UDim.new(0, 7)
+
+	draw1Btn.Activated:Connect(function()
+		if not running or (#activeSwords == 0 and not heldSword) then return end
+
+		if heldSword then
+			table.insert(activeSwords, heldSword)
+			heldSword = nil
+			draw1Btn.Text = "DRAW 1 SWORD"
+			draw1Btn.BackgroundColor3 = Color3.fromRGB(0, 170, 80)
+		else
+			heldSwords = {}
+			heldSword = activeSwords[1]
+			table.remove(activeSwords, 1)
+
+			draw1Btn.Text = "PUT AWAY 1 SWORD"
+			draw1Btn.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
+		end
+	end)
+
+	draw2Btn = Instance.new("TextButton", mainPanel)
+	draw2Btn.Size = UDim2.new(1, -20, 0, 36)
+	draw2Btn.Position = UDim2.new(0, 10, 0, 140)
+	draw2Btn.BackgroundColor3 = Color3.fromRGB(0, 120, 200)
+	draw2Btn.Text = "DRAW 2 SWORDS (DUAL)"
+	draw2Btn.TextColor3 = Color3.new(1, 1, 1)
+	draw2Btn.Font = Enum.Font.GothamBlack
+	Instance.new("UICorner", draw2Btn).CornerRadius = UDim.new(0, 7)
+
+	draw2Btn.Activated:Connect(function()
+		if not running then return end
+
+		if #heldSwords > 0 then
+			for _, sw in ipairs(heldSwords) do
+				table.insert(activeSwords, sw)
+			end
+			heldSwords = {}
+			draw2Btn.Text = "DRAW 2 SWORDS (DUAL)"
+			draw2Btn.BackgroundColor3 = Color3.fromRGB(0, 120, 200)
+		else
+			if #activeSwords < 2 then return end
+			heldSword = nil
+
+			heldSwords[1] = activeSwords[1]
+			heldSwords[2] = activeSwords[2]
+			table.remove(activeSwords, 1)
+			table.remove(activeSwords, 1)
+
+			draw2Btn.Text = "PUT AWAY 2 SWORDS"
+			draw2Btn.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
+		end
+	end)
+
+	-- BOTÃO RANDOM CHAT
+	randomChatBtn = Instance.new("TextButton", mainPanel)
+	randomChatBtn.Size = UDim2.new(1, -20, 0, 36)
+	randomChatBtn.Position = UDim2.new(0, 10, 0, 185)
+	randomChatBtn.BackgroundColor3 = Color3.fromRGB(130, 0, 200)
+	randomChatBtn.Text = "RANDOM CHAT"
+	randomChatBtn.TextColor3 = Color3.new(1, 1, 1)
+	randomChatBtn.Font = Enum.Font.GothamBlack
+	Instance.new("UICorner", randomChatBtn).CornerRadius = UDim.new(0, 7)
+
+	randomChatBtn.Activated:Connect(function()
+		if not running then return end
+		sendRandomChat()
+	end)
+
+	local panelOpen = true
+	openBtn.Activated:Connect(function()
+		panelOpen = not panelOpen
+		mainPanel.Visible = panelOpen
+	end)
+end
+
+--========================================================--
+-- RESPAWN & INIT
+--========================================================--
+
+player.CharacterAdded:Connect(function(newCharacter)
+	local restart = wasRunningBeforeRespawn
+	if running then stopAnimation() end
+	character = newCharacter
+	task.wait(1)
+	if restart then startAnimation() end
+end)
+
+createHub()
+createAttackScreenButton()
+
+print("[STACK HUB] V18 carregado com sucesso.")
+
+--========================================================--
+-- AUTO CHAT SEQUENCIAL
+--========================================================--
+
+task.spawn(function()
+	task.wait(1.5)
+	sendChatMessage("-gh 132006952641112 5699795428 5316549755 53165394215716479641")
+	task.wait(1.0)
+	sendChatMessage("-net")
+	task.wait(1.0)
+	sendChatMessage("LITTLE_PANCAKE LORD REMAKE")
+	print("[STACK HUB] Mensagens enviadas no chat com sucesso!")
+end)
